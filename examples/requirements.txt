@@ -1,0 +1,13 @@
+# Shared requirements for every example under examples/.
+# Install once at the examples/ root and run any subfolder against the same venv.
+
+# Middleware SDK
+middleware-llmobs>=0.1.0
+
+# OpenInference auto-instrumentation for OpenAI — when installed, register(auto_instrument=True)
+# wires it onto the tracer provider automatically, so every chat.completions.create() call
+# becomes an LLM span with prompt/response/model/usage attributes.
+openinference-instrumentation-openai>=0.1.0
+
+# The OpenAI Python SDK — the actual LLM client every example calls.
+openai>=1.40.0

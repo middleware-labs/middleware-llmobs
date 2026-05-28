@@ -1,0 +1,117 @@
+# Build, test, and publish a release candidate to PyPI on `v*rc*` tags.
+#
+# Trigger: push a tag matching the glob `v*rc*` (e.g. `v0.1.0rc1`, `v0.2.0rc3`). Final releases
+# (tags without "rc") are handled by `release.yml`.
+#
+# Required repo secrets (Settings → Secrets and variables → Actions):
+#   PYPI_TOKEN     — a PyPI API token scoped to the `middleware-llmobs` project. Used as the
+#                    password with the username `__token__` (the PyPI-standard convention).
+#   PYPI_USERNAME  — kept available for legacy username/password auth; not used by default.
+#   PYPI_PASSWORD  — same as above.
+
+name: rc-publish
+
+on:
+  push:
+    tags:
+      - "v*rc*"
+  workflow_dispatch: {}  # allow manual runs for testing the pipeline
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install package + dev tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test]"
+          pip install ruff mypy
+
+      - name: ruff (lint + format check)
+        run: |
+          ruff check src tests
+          ruff format --check src tests
+
+      - name: mypy
+        run: mypy src/middleware/llmobs
+
+      - name: pytest
+        run: pytest -q
+
+  build:
+    name: Build sdist + wheel
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install build backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install hatch
+
+      - name: Verify tag matches package version
+        # The tag is the source of truth for the rc version. Hatch reads pyproject.toml's
+        # static version — make sure they agree so we don't ship `0.1.0` under tag `v0.2.0rc1`.
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"  # v0.1.0rc1 -> 0.1.0rc1
+          PKG="$(hatch version)"
+          echo "tag=$TAG  pyproject=$PKG"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "::error::tag ($TAG) and pyproject version ($PKG) must match"
+            exit 1
+          fi
+        if: github.event_name == 'push'
+
+      - name: Build
+        run: hatch build -t sdist -t wheel
+
+      - name: Upload dist/ as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: Publish to PyPI (rc)
+    needs: build
+    runs-on: ubuntu-latest
+    # Only publish on actual tag pushes — workflow_dispatch runs stop at `build`.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Download dist/
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          user: __token__
+          password: ${{ secrets.PYPI_TOKEN }}
+          # `skip-existing` makes re-pushes of the same tag a no-op on PyPI's side instead of
+          # failing the workflow, useful when the test/build steps were rerun.
+          skip-existing: true
