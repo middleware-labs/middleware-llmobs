@@ -51,9 +51,7 @@ def _coerce_score(
     return 0.0
 
 
-def _log_context(
-    trace_id: Optional[str], span_id: Optional[str]
-) -> Any:
+def _log_context(trace_id: Optional[str], span_id: Optional[str]) -> Any:
     """Build the ``context=`` payload for ``LogRecord`` from raw hex IDs.
 
     Returns ``None`` when neither ID is given (unattached eval). Otherwise wraps a synthetic
@@ -142,9 +140,7 @@ class EvalClient:
             tags=tags,
         )
 
-        resolved_trace_id, resolved_span_id = _resolve_target(
-            span_id, trace_id, join_on_tag
-        )
+        resolved_trace_id, resolved_span_id = _resolve_target(span_id, trace_id, join_on_tag)
 
         self._emit(
             label=label,
@@ -200,9 +196,7 @@ class EvalClient:
                 except (TypeError, ValueError) as e:
                     raise ValueError(f"{name} must be JSON-serializable: {e}") from e
 
-        resolved_trace_id, resolved_span_id = _resolve_target(
-            span_id, trace_id, join_on_tag
-        )
+        resolved_trace_id, resolved_span_id = _resolve_target(span_id, trace_id, join_on_tag)
         self._emit_error(
             label=label,
             error=error,
@@ -301,9 +295,7 @@ class EvalClient:
         resolved = metric_type or infer_metric_type(value)
         if resolved == "score":
             if isinstance(value, bool) or not isinstance(value, (int, float)):
-                raise TypeError(
-                    "value must be int or float (not bool) for a score metric."
-                )
+                raise TypeError("value must be int or float (not bool) for a score metric.")
         elif resolved == "boolean":
             if not isinstance(value, bool):
                 raise TypeError("value must be a bool for a boolean metric.")
