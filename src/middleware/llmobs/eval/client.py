@@ -6,10 +6,11 @@ providers or exporters — it only emits. Span/trace correlation uses the log re
 ``trace_id``/``span_id`` fields
 """
 
+import asyncio
 import json
 import re
 import time
-from typing import Any, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 from opentelemetry import trace as trace_api
 from opentelemetry._logs import SeverityNumber, get_logger, get_logger_provider
@@ -32,6 +33,21 @@ _LABEL_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_]*$")
 def _resolve_ml_app(ml_app: Optional[str]) -> str:
     # get_env_service_name() always returns a non-empty str (defaults to "default").
     return ml_app or get_env_service_name()
+
+
+def _is_async_evaluator(evaluator_fn: Any) -> bool:
+    """True if ``evaluator_fn`` is awaitable — either an ``@async_evaluator``-decorated function
+    or an :class:`AsyncBaseEvaluator` instance.
+
+    Structural check (no import from ``.base``) avoids tangling client.py with base.py just for
+    a type test. Both sources set ``_is_async_evaluator = True``; we also fall back to
+    ``asyncio.iscoroutinefunction`` for bare ``async def`` callables a user might pass in.
+    """
+    if getattr(evaluator_fn, "_is_async_evaluator", False):
+        return True
+    return asyncio.iscoroutinefunction(evaluator_fn) or asyncio.iscoroutinefunction(
+        getattr(evaluator_fn, "__call__", None)
+    )
 
 
 def _coerce_score(
@@ -215,7 +231,40 @@ class EvalClient:
         evaluator_fn: Callable[[EvaluatorContext], Optional[EvaluatorResult]],
         context: EvaluatorContext,
     ) -> Optional[EvaluatorResult]:
+        # Guard against passing an async evaluator here — the result would be a coroutine, not
+        # an EvaluatorResult, and the downstream branches would fail in unhelpful ways.
+        if _is_async_evaluator(evaluator_fn):
+            raise TypeError(
+                "evaluate_and_submit got an async evaluator; use aevaluate_and_submit instead."
+            )
         result = evaluator_fn(context)
+        return self._ship_result(result, context)
+
+    async def aevaluate_and_submit(
+        self,
+        evaluator_fn: Callable[[EvaluatorContext], Awaitable[Optional[EvaluatorResult]]],
+        context: EvaluatorContext,
+    ) -> Optional[EvaluatorResult]:
+        """Async sibling of :meth:`evaluate_and_submit`.
+
+        Awaits the evaluator (so the event loop can yield during the judge's LLM call), then
+        ships the result through the same sync submission path — :meth:`submit_evaluation` is
+        non-blocking already (OTel batches the export off-thread), so it doesn't need an async
+        sibling.
+        """
+        if not _is_async_evaluator(evaluator_fn):
+            raise TypeError(
+                "aevaluate_and_submit requires an async evaluator (one decorated with "
+                "@async_evaluator or a subclass of AsyncBaseEvaluator). Use evaluate_and_submit "
+                "for sync evaluators."
+            )
+        result = await evaluator_fn(context)
+        return self._ship_result(result, context)
+
+    def _ship_result(
+        self, result: Optional[EvaluatorResult], context: EvaluatorContext
+    ) -> Optional[EvaluatorResult]:
+        """Common tail for the sync + async ``evaluate_and_submit`` siblings."""
         if result is None:
             return result
         # An errored evaluator is reported as a failed eval, not silently dropped.
@@ -230,6 +279,7 @@ class EvalClient:
                 tags=result.tags,
             )
             return result
+        # Door B (defensive): SDK paths set either `value` or `error`, never both None.
         if result.value is None:
             return result
         self.submit_evaluation(
@@ -515,6 +565,14 @@ def evaluate_and_submit(
 ) -> Optional[EvaluatorResult]:
     """Module-level :meth:`EvalClient.evaluate_and_submit` over a default client."""
     return _get_default_client().evaluate_and_submit(evaluator_fn, context)
+
+
+async def aevaluate_and_submit(
+    evaluator_fn: Callable[[EvaluatorContext], Awaitable[Optional[EvaluatorResult]]],
+    context: EvaluatorContext,
+) -> Optional[EvaluatorResult]:
+    """Module-level :meth:`EvalClient.aevaluate_and_submit` over a default client."""
+    return await _get_default_client().aevaluate_and_submit(evaluator_fn, context)
 
 
 def flush_evaluations(timeout_millis: int = 30_000) -> bool:

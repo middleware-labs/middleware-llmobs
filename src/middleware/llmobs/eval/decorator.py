@@ -1,8 +1,9 @@
-"""The ``@evaluator`` decorator and the shared result-normalization logic."""
+"""``@evaluator`` (sync) + ``@async_evaluator`` decorators and shared normalization."""
 
+import asyncio
 import functools
 from dataclasses import replace
-from typing import Any, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 from .types import EvaluatorContext, EvaluatorResult, infer_metric_type
 
@@ -63,6 +64,11 @@ def evaluator(
     """
 
     def decorate(f: Callable[[EvaluatorContext], Any]) -> Callable[..., Any]:
+        if asyncio.iscoroutinefunction(f):
+            raise TypeError(
+                f"@evaluator cannot wrap async function {f.__name__!r}; "
+                "use @async_evaluator for coroutines."
+            )
         eval_name = name or f.__name__
 
         @functools.wraps(f)
@@ -79,6 +85,63 @@ def evaluator(
             return _normalize_result(raw, eval_name)
 
         wrapped._is_evaluator = True  # type: ignore[attr-defined]
+        wrapped._evaluator_name = eval_name  # type: ignore[attr-defined]
+        return wrapped
+
+    if fn is not None and callable(fn):
+        return decorate(fn)
+    return decorate
+
+
+def async_evaluator(
+    fn: Optional[Callable[[EvaluatorContext], Awaitable[Any]]] = None,
+    *,
+    name: Optional[str] = None,
+) -> Callable[..., Any]:
+    """Mark an ``async def`` function as an evaluator.
+
+    The wrapped coroutine returns an :class:`EvaluatorResult` (or ``None`` to skip) and captures
+    any exception into ``error``/``error_type`` rather than propagating. Aside from being
+    awaitable, behaviour mirrors :func:`evaluator` exactly — same return-type normalisation,
+    same metric-type inference, same ``_is_evaluator`` marker.
+
+    Usage::
+
+        @async_evaluator
+        async def is_valid_json(ctx: EvaluatorContext) -> bool:
+            try:
+                json.loads(ctx.output)
+                return True
+            except Exception:
+                return False
+
+        @async_evaluator(name="custom_name")
+        async def my_eval(ctx: EvaluatorContext) -> float: ...
+    """
+
+    def decorate(f: Callable[[EvaluatorContext], Awaitable[Any]]) -> Callable[..., Any]:
+        if not asyncio.iscoroutinefunction(f):
+            raise TypeError(
+                f"@async_evaluator can only wrap async def functions; got {f.__name__!r}. "
+                "Use @evaluator for synchronous evaluators."
+            )
+        eval_name = name or f.__name__
+
+        @functools.wraps(f)
+        async def wrapped(ctx: EvaluatorContext) -> Optional[EvaluatorResult]:
+            try:
+                raw = await f(ctx)
+            except Exception as e:  # noqa: BLE001 — capture, never propagate
+                return EvaluatorResult(
+                    value=None,
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    evaluator_name=eval_name,
+                )
+            return _normalize_result(raw, eval_name)
+
+        wrapped._is_evaluator = True  # type: ignore[attr-defined]
+        wrapped._is_async_evaluator = True  # type: ignore[attr-defined]
         wrapped._evaluator_name = eval_name  # type: ignore[attr-defined]
         return wrapped
 

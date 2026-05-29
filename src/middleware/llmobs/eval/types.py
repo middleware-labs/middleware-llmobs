@@ -55,6 +55,22 @@ class LLMClient(Protocol):
     ) -> str: ...
 
 
+class AsyncLLMClient(Protocol):
+    """Async sibling of :class:`LLMClient`. Used by :class:`AsyncLLMJudge`.
+
+    The user provides any awaitable callable matching this signature (e.g. an adapter over
+    ``openai.AsyncOpenAI`` or ``anthropic.AsyncAnthropic``); the SDK never imports a provider.
+    """
+
+    async def __call__(
+        self,
+        messages: list[dict[str, str]],
+        model: str,
+        json_schema: Optional[dict[str, Any]] = None,
+        model_params: Optional[dict[str, Any]] = None,
+    ) -> str: ...
+
+
 def infer_metric_type(value: ScoreValue) -> MetricType:
     """Infer the metric type from a value.
 

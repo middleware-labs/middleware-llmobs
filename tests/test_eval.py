@@ -425,3 +425,164 @@ def test_no_llm_provider_imported() -> None:
 
     banned = ["openai", "anthropic", "boto3", "vertexai", "cohere", "mistralai"]
     assert [b for b in banned if b in sys.modules] == []
+
+
+# --- async surface ------------------------------------------------------
+
+import asyncio  # noqa: E402
+
+from middleware.llmobs.eval import (  # noqa: E402
+    AsyncBaseEvaluator,
+    AsyncLLMJudge,
+    aevaluate_and_submit,
+    async_evaluator,
+)
+
+
+def test_async_evaluator_rejects_sync_function() -> None:
+    with pytest.raises(TypeError, match="async def"):
+
+        @async_evaluator
+        def not_async(c: EvaluatorContext) -> bool:
+            return True
+
+
+def test_sync_evaluator_rejects_async_function() -> None:
+    with pytest.raises(TypeError, match="async function"):
+
+        @evaluator
+        async def actually_async(c: EvaluatorContext) -> bool:
+            return True
+
+
+def test_async_evaluator_return_types(ctx: EvaluatorContext) -> None:
+    @async_evaluator
+    async def b(c: EvaluatorContext) -> bool:
+        return True
+
+    @async_evaluator
+    async def s(c: EvaluatorContext) -> float:
+        return 0.75
+
+    @async_evaluator(name="custom")
+    async def cat(c: EvaluatorContext) -> str:
+        return "ok"
+
+    assert asyncio.run(b(ctx)).metric_type == "boolean"
+    assert asyncio.run(s(ctx)).metric_type == "score"
+    out = asyncio.run(cat(ctx))
+    assert out.metric_type == "categorical" and out.evaluator_name == "custom"
+    assert b._is_evaluator is True and b._is_async_evaluator is True  # type: ignore[attr-defined]
+
+
+def test_async_evaluator_captures_error(ctx: EvaluatorContext) -> None:
+    @async_evaluator
+    async def boom(c: EvaluatorContext) -> bool:
+        raise RuntimeError("kaboom")
+
+    r = asyncio.run(boom(ctx))
+    assert r is not None and r.error == "kaboom" and r.error_type == "RuntimeError"
+
+
+def test_async_basevaluator_works(ctx: EvaluatorContext) -> None:
+    class MyAsync(AsyncBaseEvaluator):
+        async def evaluate(self, c: EvaluatorContext) -> EvaluatorResult:
+            return EvaluatorResult(value=0.9, metric_type="score", assessment="pass")
+
+    r = asyncio.run(MyAsync()(ctx))
+    assert r is not None and r.value == 0.9 and r.evaluator_name == "MyAsync"
+
+
+def test_async_llmjudge_with_fake_async_client(ctx: EvaluatorContext) -> None:
+    async def fake_async(messages, model, json_schema=None, model_params=None):  # type: ignore[no-untyped-def]
+        return json.dumps({"score_eval": 0.82, "reasoning": "looks fine"})
+
+    judge = AsyncLLMJudge(
+        client=fake_async,
+        model="m",
+        user_prompt="{{output}}",
+        structured_output=ScoreStructuredOutput(
+            description="d", min_score=0, max_score=1, reasoning=True, min_threshold=0.7
+        ),
+    )
+    r = asyncio.run(judge(ctx))
+    assert r is not None
+    assert r.value == 0.82
+    assert r.metric_type == "score"
+    assert r.assessment == "pass"
+    assert r.reasoning == "looks fine"
+
+
+def test_async_llmjudge_requires_client() -> None:
+    with pytest.raises(ValueError):
+        AsyncLLMJudge(client=None, model="m", user_prompt="x")  # type: ignore[arg-type]
+
+
+def test_evaluate_and_submit_rejects_async_evaluator() -> None:
+    @async_evaluator
+    async def a(c: EvaluatorContext) -> bool:
+        return True
+
+    with pytest.raises(TypeError, match="aevaluate_and_submit"):
+        EvalClient().evaluate_and_submit(a, EvaluatorContext(input="q", output="a"))
+
+
+def test_aevaluate_and_submit_rejects_sync_evaluator() -> None:
+    @evaluator
+    def s(c: EvaluatorContext) -> bool:
+        return True
+
+    with pytest.raises(TypeError, match="async evaluator"):
+        asyncio.run(
+            EvalClient().aevaluate_and_submit(s, EvaluatorContext(input="q", output="a"))  # type: ignore[arg-type]
+        )
+
+
+def test_aevaluate_and_submit_ships_judge_result(
+    emit_env: tuple[InMemoryLogRecordExporter, InMemoryMetricReader],
+) -> None:
+    log_exp, _ = emit_env
+
+    async def fake_async(messages, model, json_schema=None, model_params=None):  # type: ignore[no-untyped-def]
+        return json.dumps({"boolean_eval": False, "reasoning": "not toxic"})
+
+    judge = AsyncLLMJudge(
+        client=fake_async,
+        model="m",
+        user_prompt="{{output}}",
+        structured_output=BooleanStructuredOutput(description="d", reasoning=True, pass_when=False),
+        name="toxicity",
+    )
+    ctx = EvaluatorContext(input="hi", output="hello")
+    result = asyncio.run(aevaluate_and_submit(judge, ctx))
+
+    assert result is not None
+    assert result.value is False
+    assert result.assessment == "pass"
+
+    logs = log_exp.get_finished_logs()
+    assert len(logs) == 1
+    attrs = dict(logs[0].log_record.attributes or {})
+    assert attrs["gen_ai.evaluation.name"] == "toxicity"
+    assert attrs["gen_ai.evaluation.verdict"] == "pass"
+
+
+def test_aevaluate_and_submit_emits_error_for_failed_judge(
+    emit_env: tuple[InMemoryLogRecordExporter, InMemoryMetricReader],
+) -> None:
+    log_exp, _ = emit_env
+
+    @async_evaluator
+    async def boom(c: EvaluatorContext) -> bool:
+        raise RuntimeError("judge timed out")
+
+    ctx = EvaluatorContext(input="q", output="a")
+    result = asyncio.run(aevaluate_and_submit(boom, ctx))
+
+    # Error surfaced via submit_evaluation_error, NOT silently dropped.
+    assert result is not None and result.error == "judge timed out"
+    logs = log_exp.get_finished_logs()
+    assert len(logs) == 1
+    attrs = dict(logs[0].log_record.attributes or {})
+    assert attrs["gen_ai.evaluation.outcome"] == "error"
+    assert attrs["error.type"] == "RuntimeError"

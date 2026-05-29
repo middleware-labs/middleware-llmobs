@@ -1,16 +1,17 @@
 """Evaluation surfaces for middleware-llmobs: submit scores and run local evaluators."""
 
-from .base import BaseEvaluator
+from .base import AsyncBaseEvaluator, BaseEvaluator
 from .client import (
     EvalClient,
+    aevaluate_and_submit,
     evaluate_and_submit,
     export_current_span,
     flush_evaluations,
     submit_evaluation,
     submit_evaluation_error,
 )
-from .decorator import evaluator
-from .judge import LLMJudge
+from .decorator import async_evaluator, evaluator
+from .judge import AsyncLLMJudge, LLMJudge
 from .schema import format_schema_for_provider
 from .structured_output import (
     BaseStructuredOutput,
@@ -21,6 +22,7 @@ from .structured_output import (
 )
 from .types import (
     Assessment,
+    AsyncLLMClient,
     EvaluatorContext,
     EvaluatorResult,
     LLMClient,
@@ -33,14 +35,18 @@ __all__ = [
     "EvaluatorContext",
     "EvaluatorResult",
     "LLMClient",
+    "AsyncLLMClient",
     "MetricType",
     "Assessment",
     "ScoreValue",
-    # evaluator authoring
+    # evaluator authoring (sync + async)
     "evaluator",
+    "async_evaluator",
     "BaseEvaluator",
-    # LLM-judge authoring
+    "AsyncBaseEvaluator",
+    # LLM-judge authoring (sync + async)
     "LLMJudge",
+    "AsyncLLMJudge",
     "BaseStructuredOutput",
     "BooleanStructuredOutput",
     "ScoreStructuredOutput",
@@ -51,6 +57,7 @@ __all__ = [
     "submit_evaluation",
     "submit_evaluation_error",
     "evaluate_and_submit",
+    "aevaluate_and_submit",
     "flush_evaluations",
     "export_current_span",
     "EvalClient",
