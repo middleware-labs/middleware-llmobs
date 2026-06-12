@@ -129,9 +129,7 @@ def test_annotate_rag_sets_query_and_documents(exporter: InMemorySpanExporter) -
     a = _attrs(exporter, "manual")
     assert a["gen_ai.operation.name"] == "retrieval"
     assert a["gen_ai.retrieval.query.text"] == "manual query"
-    assert json.loads(a["gen_ai.retrieval.documents"]) == [
-        {"id": "m1", "score": 0.1, "text": "x"}
-    ]
+    assert json.loads(a["gen_ai.retrieval.documents"]) == [{"id": "m1", "score": 0.1, "text": "x"}]
 
 
 def test_annotate_rag_normalizes_objects(exporter: InMemorySpanExporter) -> None:
