@@ -373,6 +373,59 @@ def test_submit_evaluation_with_judge_metadata_and_cost(
     assert "gen_ai.evaluations.cost.usd" in names
 
 
+def test_submit_evaluation_with_usage_emits_token_gauges(
+    emit_env: tuple[InMemoryLogRecordExporter, InMemoryMetricReader],
+) -> None:
+    log_exp, reader = emit_env
+    EvalClient().submit_evaluation(
+        label="faithfulness",
+        value=0.9,
+        metric_type="score",
+        usage={"input_tokens": 420, "output_tokens": 87},
+    )
+    rec = log_exp.get_finished_logs()[-1].log_record
+    attrs = dict(rec.attributes or {})
+    assert attrs["gen_ai.evaluation.input_tokens"] == 420
+    assert attrs["gen_ai.evaluation.output_tokens"] == 87
+    body = json.loads(rec.body)
+    assert body["usage"] == {"input_tokens": 420, "output_tokens": 87}
+
+    names = {
+        m.name
+        for rm in reader.get_metrics_data().resource_metrics
+        for sm in rm.scope_metrics
+        for m in sm.metrics
+    }
+    assert "gen_ai.evaluations.input_tokens" in names
+    assert "gen_ai.evaluations.output_tokens" in names
+
+
+def test_submit_evaluation_without_usage_skips_token_attrs(
+    emit_env: tuple[InMemoryLogRecordExporter, InMemoryMetricReader],
+) -> None:
+    log_exp, _ = emit_env
+    EvalClient().submit_evaluation(label="faithfulness", value=0.5, metric_type="score")
+    attrs = dict(log_exp.get_finished_logs()[-1].log_record.attributes or {})
+    assert "gen_ai.evaluation.input_tokens" not in attrs
+    assert "gen_ai.evaluation.output_tokens" not in attrs
+
+
+def test_submit_evaluation_with_partial_usage_emits_only_present_field(
+    emit_env: tuple[InMemoryLogRecordExporter, InMemoryMetricReader],
+) -> None:
+    # Only input_tokens given; output side must stay silent (no zero default).
+    log_exp, _ = emit_env
+    EvalClient().submit_evaluation(
+        label="faithfulness",
+        value=0.5,
+        metric_type="score",
+        usage={"input_tokens": 200},
+    )
+    attrs = dict(log_exp.get_finished_logs()[-1].log_record.attributes or {})
+    assert attrs["gen_ai.evaluation.input_tokens"] == 200
+    assert "gen_ai.evaluation.output_tokens" not in attrs
+
+
 # --- format_schema_for_provider -----------------------------------------
 
 

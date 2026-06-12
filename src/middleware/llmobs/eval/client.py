@@ -121,6 +121,8 @@ class EvalClient:
             "score": meter.create_gauge("gen_ai.evaluations.score", unit="1"),
             "outcome": meter.create_gauge("gen_ai.evaluations.outcome", unit="1"),
             "cost": meter.create_gauge("gen_ai.evaluations.cost.usd", unit="USD"),
+            "input_tokens": meter.create_gauge("gen_ai.evaluations.input_tokens", unit="1"),
+            "output_tokens": meter.create_gauge("gen_ai.evaluations.output_tokens", unit="1"),
         }
 
     # -- public API -------------------------------------------------------
@@ -139,6 +141,7 @@ class EvalClient:
         judge_provider: Optional[str] = None,
         judge_model: Optional[str] = None,
         cost_usd: Optional[float] = None,
+        usage: Optional[dict[str, int]] = None,
         metadata: Optional[dict[str, Any]] = None,
         tags: Optional[dict[str, str]] = None,
         timestamp_ms: Optional[int] = None,
@@ -171,6 +174,7 @@ class EvalClient:
             judge_provider=judge_provider or "",
             judge_model=judge_model or "",
             cost_usd=cost_usd,
+            usage=usage,
             metadata=metadata or {},
             tags=tags or {},
             timestamp_ms=timestamp_ms,
@@ -382,13 +386,14 @@ class EvalClient:
         judge_provider: str,
         judge_model: str,
         cost_usd: Optional[float],
+        usage: Optional[dict[str, int]],
         metadata: dict[str, Any],
         tags: dict[str, str],
         timestamp_ms: Optional[int],
         ml_app: str,
     ) -> None:
         self._ensure_instruments()
-
+        score_label = str(value)
         score = _coerce_score(metric_type, value, assessment)
         now_ns = (timestamp_ms * 1_000_000) if timestamp_ms else time.time_ns()
         # Server-side body uses ``verdict``/``explanation`` for the same data the SDK exposes as
@@ -411,6 +416,8 @@ class EvalClient:
             body["explanation"] = explanation
         if cost_usd is not None:
             body["cost_usd"] = float(cost_usd)
+        if usage:
+            body["usage"] = usage
         if metadata:
             body["metadata"] = metadata
         if tags:
@@ -430,6 +437,12 @@ class EvalClient:
             attributes["eval.model.name"] = judge_model
         if cost_usd is not None:
             attributes["gen_ai.evaluation.cost.usd"] = float(cost_usd)
+        input_tokens = usage.get("input_tokens") if usage else None
+        output_tokens = usage.get("output_tokens") if usage else None
+        if isinstance(input_tokens, int):
+            attributes["gen_ai.evaluation.input_tokens"] = input_tokens
+        if isinstance(output_tokens, int):
+            attributes["gen_ai.evaluation.output_tokens"] = output_tokens
         if trace_id is not None:
             attributes["eval.target.trace_id"] = trace_id
         if span_id is not None:
@@ -464,6 +477,10 @@ class EvalClient:
         self._gauges["outcome"].set(1, {**common, "outcome": outcome})
         if cost_usd is not None:
             self._gauges["cost"].set(float(cost_usd), common)
+        if isinstance(input_tokens, int):
+            self._gauges["input_tokens"].set(input_tokens, common)
+        if isinstance(output_tokens, int):
+            self._gauges["output_tokens"].set(output_tokens, common)
 
     def _emit_error(
         self,

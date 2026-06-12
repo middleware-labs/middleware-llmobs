@@ -14,6 +14,12 @@ from openinference.semconv.trace import (
 )
 from opentelemetry.sdk.resources import Resource
 
+from .decorators import (
+    annotate_rag,
+    embedding,
+    retriever,
+    task,
+)
 from .eval import (
     Assessment,
     AsyncBaseEvaluator,
@@ -90,6 +96,11 @@ __all__ = [
     "OpenInferenceSpanKindValues",
     "OpenInferenceMimeTypeValues",
     "TraceConfig",
+    # Span decorators
+    "retriever",
+    "task",
+    "embedding",
+    "annotate_rag",
     # Evaluations
     "EvaluatorContext",
     "EvaluatorResult",
