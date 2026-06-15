@@ -403,6 +403,7 @@ class EvalClient:
 
         body: dict[str, Any] = {
             "eval_name": label,
+            "evaluator_type": label,
             "ml_app": ml_app,
             "score_value": value,
             "metric_type": metric_type,
@@ -425,6 +426,7 @@ class EvalClient:
 
         attributes: dict[str, Any] = {
             "gen_ai.evaluation.name": label,
+            "gen_ai.evaluation.type": label,
             "gen_ai.evaluation.score.label": score_label,
             "gen_ai.evaluation.explanation": explanation[:20000],
             "gen_ai.evaluation.verdict": verdict,
@@ -467,6 +469,7 @@ class EvalClient:
         outcome = assessment or "submitted"
         common = {
             "eval_name": label,
+            "evaluator_type": label,
             "score_label": score_label,
             "verdict": verdict,
             "model": judge_model,
@@ -504,6 +507,7 @@ class EvalClient:
         body: dict[str, Any] = {
             "outcome": "error",
             "eval_name": label,
+            "evaluator_type": label,
             "ml_app": ml_app,
             "error.type": error_type,
             "error.message": msg,
@@ -517,6 +521,7 @@ class EvalClient:
         attributes: dict[str, Any] = {
             "gen_ai.evaluation.outcome": "error",
             "gen_ai.evaluation.name": label,
+            "gen_ai.evaluation.type": label,
             # OpenTelemetry exception semconv + an explicit error.type alias for dashboards.
             "exception.type": error_type,
             "exception.message": msg,
@@ -545,6 +550,7 @@ class EvalClient:
 
         common = {
             "eval_name": label,
+            "evaluator_type": label,
             "score_label": "",
             "verdict": "",
             "error.type": error_type,
