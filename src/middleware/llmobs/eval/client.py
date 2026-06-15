@@ -6,10 +6,11 @@ providers or exporters — it only emits. Span/trace correlation uses the log re
 ``trace_id``/``span_id`` fields
 """
 
+import asyncio
 import json
 import re
 import time
-from typing import Any, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 from opentelemetry import trace as trace_api
 from opentelemetry._logs import SeverityNumber, get_logger, get_logger_provider
@@ -34,6 +35,21 @@ def _resolve_ml_app(ml_app: Optional[str]) -> str:
     return ml_app or get_env_service_name()
 
 
+def _is_async_evaluator(evaluator_fn: Any) -> bool:
+    """True if ``evaluator_fn`` is awaitable — either an ``@async_evaluator``-decorated function
+    or an :class:`AsyncBaseEvaluator` instance.
+
+    Structural check (no import from ``.base``) avoids tangling client.py with base.py just for
+    a type test. Both sources set ``_is_async_evaluator = True``; we also fall back to
+    ``asyncio.iscoroutinefunction`` for bare ``async def`` callables a user might pass in.
+    """
+    if getattr(evaluator_fn, "_is_async_evaluator", False):
+        return True
+    return asyncio.iscoroutinefunction(evaluator_fn) or asyncio.iscoroutinefunction(
+        getattr(evaluator_fn, "__call__", None)
+    )
+
+
 def _coerce_score(
     metric_type: MetricType, value: ScoreValue, assessment: Optional[Assessment]
 ) -> float:
@@ -51,9 +67,7 @@ def _coerce_score(
     return 0.0
 
 
-def _log_context(
-    trace_id: Optional[str], span_id: Optional[str]
-) -> Any:
+def _log_context(trace_id: Optional[str], span_id: Optional[str]) -> Any:
     """Build the ``context=`` payload for ``LogRecord`` from raw hex IDs.
 
     Returns ``None`` when neither ID is given (unattached eval). Otherwise wraps a synthetic
@@ -107,6 +121,8 @@ class EvalClient:
             "score": meter.create_gauge("gen_ai.evaluations.score", unit="1"),
             "outcome": meter.create_gauge("gen_ai.evaluations.outcome", unit="1"),
             "cost": meter.create_gauge("gen_ai.evaluations.cost.usd", unit="USD"),
+            "input_tokens": meter.create_gauge("gen_ai.evaluations.input_tokens", unit="1"),
+            "output_tokens": meter.create_gauge("gen_ai.evaluations.output_tokens", unit="1"),
         }
 
     # -- public API -------------------------------------------------------
@@ -125,6 +141,7 @@ class EvalClient:
         judge_provider: Optional[str] = None,
         judge_model: Optional[str] = None,
         cost_usd: Optional[float] = None,
+        usage: Optional[dict[str, int]] = None,
         metadata: Optional[dict[str, Any]] = None,
         tags: Optional[dict[str, str]] = None,
         timestamp_ms: Optional[int] = None,
@@ -142,9 +159,7 @@ class EvalClient:
             tags=tags,
         )
 
-        resolved_trace_id, resolved_span_id = _resolve_target(
-            span_id, trace_id, join_on_tag
-        )
+        resolved_trace_id, resolved_span_id = _resolve_target(span_id, trace_id, join_on_tag)
 
         self._emit(
             label=label,
@@ -159,6 +174,7 @@ class EvalClient:
             judge_provider=judge_provider or "",
             judge_model=judge_model or "",
             cost_usd=cost_usd,
+            usage=usage,
             metadata=metadata or {},
             tags=tags or {},
             timestamp_ms=timestamp_ms,
@@ -200,9 +216,7 @@ class EvalClient:
                 except (TypeError, ValueError) as e:
                     raise ValueError(f"{name} must be JSON-serializable: {e}") from e
 
-        resolved_trace_id, resolved_span_id = _resolve_target(
-            span_id, trace_id, join_on_tag
-        )
+        resolved_trace_id, resolved_span_id = _resolve_target(span_id, trace_id, join_on_tag)
         self._emit_error(
             label=label,
             error=error,
@@ -221,7 +235,40 @@ class EvalClient:
         evaluator_fn: Callable[[EvaluatorContext], Optional[EvaluatorResult]],
         context: EvaluatorContext,
     ) -> Optional[EvaluatorResult]:
+        # Guard against passing an async evaluator here — the result would be a coroutine, not
+        # an EvaluatorResult, and the downstream branches would fail in unhelpful ways.
+        if _is_async_evaluator(evaluator_fn):
+            raise TypeError(
+                "evaluate_and_submit got an async evaluator; use aevaluate_and_submit instead."
+            )
         result = evaluator_fn(context)
+        return self._ship_result(result, context)
+
+    async def aevaluate_and_submit(
+        self,
+        evaluator_fn: Callable[[EvaluatorContext], Awaitable[Optional[EvaluatorResult]]],
+        context: EvaluatorContext,
+    ) -> Optional[EvaluatorResult]:
+        """Async sibling of :meth:`evaluate_and_submit`.
+
+        Awaits the evaluator (so the event loop can yield during the judge's LLM call), then
+        ships the result through the same sync submission path — :meth:`submit_evaluation` is
+        non-blocking already (OTel batches the export off-thread), so it doesn't need an async
+        sibling.
+        """
+        if not _is_async_evaluator(evaluator_fn):
+            raise TypeError(
+                "aevaluate_and_submit requires an async evaluator (one decorated with "
+                "@async_evaluator or a subclass of AsyncBaseEvaluator). Use evaluate_and_submit "
+                "for sync evaluators."
+            )
+        result = await evaluator_fn(context)
+        return self._ship_result(result, context)
+
+    def _ship_result(
+        self, result: Optional[EvaluatorResult], context: EvaluatorContext
+    ) -> Optional[EvaluatorResult]:
+        """Common tail for the sync + async ``evaluate_and_submit`` siblings."""
         if result is None:
             return result
         # An errored evaluator is reported as a failed eval, not silently dropped.
@@ -236,6 +283,7 @@ class EvalClient:
                 tags=result.tags,
             )
             return result
+        # Door B (defensive): SDK paths set either `value` or `error`, never both None.
         if result.value is None:
             return result
         self.submit_evaluation(
@@ -301,9 +349,7 @@ class EvalClient:
         resolved = metric_type or infer_metric_type(value)
         if resolved == "score":
             if isinstance(value, bool) or not isinstance(value, (int, float)):
-                raise TypeError(
-                    "value must be int or float (not bool) for a score metric."
-                )
+                raise TypeError("value must be int or float (not bool) for a score metric.")
         elif resolved == "boolean":
             if not isinstance(value, bool):
                 raise TypeError("value must be a bool for a boolean metric.")
@@ -340,13 +386,14 @@ class EvalClient:
         judge_provider: str,
         judge_model: str,
         cost_usd: Optional[float],
+        usage: Optional[dict[str, int]],
         metadata: dict[str, Any],
         tags: dict[str, str],
         timestamp_ms: Optional[int],
         ml_app: str,
     ) -> None:
         self._ensure_instruments()
-
+        score_label = str(value)
         score = _coerce_score(metric_type, value, assessment)
         now_ns = (timestamp_ms * 1_000_000) if timestamp_ms else time.time_ns()
         # Server-side body uses ``verdict``/``explanation`` for the same data the SDK exposes as
@@ -356,6 +403,7 @@ class EvalClient:
 
         body: dict[str, Any] = {
             "eval_name": label,
+            "evaluator_type": label,
             "ml_app": ml_app,
             "score_value": value,
             "metric_type": metric_type,
@@ -369,6 +417,8 @@ class EvalClient:
             body["explanation"] = explanation
         if cost_usd is not None:
             body["cost_usd"] = float(cost_usd)
+        if usage:
+            body["usage"] = usage
         if metadata:
             body["metadata"] = metadata
         if tags:
@@ -376,6 +426,7 @@ class EvalClient:
 
         attributes: dict[str, Any] = {
             "gen_ai.evaluation.name": label,
+            "gen_ai.evaluation.type": label,
             "gen_ai.evaluation.score.label": score_label,
             "gen_ai.evaluation.explanation": explanation[:20000],
             "gen_ai.evaluation.verdict": verdict,
@@ -388,6 +439,12 @@ class EvalClient:
             attributes["eval.model.name"] = judge_model
         if cost_usd is not None:
             attributes["gen_ai.evaluation.cost.usd"] = float(cost_usd)
+        input_tokens = usage.get("input_tokens") if usage else None
+        output_tokens = usage.get("output_tokens") if usage else None
+        if isinstance(input_tokens, int):
+            attributes["gen_ai.evaluation.input_tokens"] = input_tokens
+        if isinstance(output_tokens, int):
+            attributes["gen_ai.evaluation.output_tokens"] = output_tokens
         if trace_id is not None:
             attributes["eval.target.trace_id"] = trace_id
         if span_id is not None:
@@ -412,6 +469,7 @@ class EvalClient:
         outcome = assessment or "submitted"
         common = {
             "eval_name": label,
+            "evaluator_type": label,
             "score_label": score_label,
             "verdict": verdict,
             "model": judge_model,
@@ -422,6 +480,10 @@ class EvalClient:
         self._gauges["outcome"].set(1, {**common, "outcome": outcome})
         if cost_usd is not None:
             self._gauges["cost"].set(float(cost_usd), common)
+        if isinstance(input_tokens, int):
+            self._gauges["input_tokens"].set(input_tokens, common)
+        if isinstance(output_tokens, int):
+            self._gauges["output_tokens"].set(output_tokens, common)
 
     def _emit_error(
         self,
@@ -445,6 +507,7 @@ class EvalClient:
         body: dict[str, Any] = {
             "outcome": "error",
             "eval_name": label,
+            "evaluator_type": label,
             "ml_app": ml_app,
             "error.type": error_type,
             "error.message": msg,
@@ -458,6 +521,7 @@ class EvalClient:
         attributes: dict[str, Any] = {
             "gen_ai.evaluation.outcome": "error",
             "gen_ai.evaluation.name": label,
+            "gen_ai.evaluation.type": label,
             # OpenTelemetry exception semconv + an explicit error.type alias for dashboards.
             "exception.type": error_type,
             "exception.message": msg,
@@ -486,6 +550,7 @@ class EvalClient:
 
         common = {
             "eval_name": label,
+            "evaluator_type": label,
             "score_label": "",
             "verdict": "",
             "error.type": error_type,
@@ -523,6 +588,14 @@ def evaluate_and_submit(
 ) -> Optional[EvaluatorResult]:
     """Module-level :meth:`EvalClient.evaluate_and_submit` over a default client."""
     return _get_default_client().evaluate_and_submit(evaluator_fn, context)
+
+
+async def aevaluate_and_submit(
+    evaluator_fn: Callable[[EvaluatorContext], Awaitable[Optional[EvaluatorResult]]],
+    context: EvaluatorContext,
+) -> Optional[EvaluatorResult]:
+    """Module-level :meth:`EvalClient.aevaluate_and_submit` over a default client."""
+    return await _get_default_client().aevaluate_and_submit(evaluator_fn, context)
 
 
 def flush_evaluations(timeout_millis: int = 30_000) -> bool:

@@ -73,17 +73,13 @@ class TestRegister:
         assert providers.tracer.resource.attributes.get(PROJECT_NAME) == "my-proj"
 
     def test_register_project_name_defaults_to_service_name(self) -> None:
-        providers = register(
-            service_name="my-app", verbose=False, set_global_tracer_provider=False
-        )
+        providers = register(service_name="my-app", verbose=False, set_global_tracer_provider=False)
 
         assert providers.tracer.resource.attributes.get(SERVICE_NAME) == "my-app"
         assert providers.tracer.resource.attributes.get(PROJECT_NAME) == "my-app"
 
     def test_register_with_middleware_endpoint(self) -> None:
-        providers = register(
-            endpoint=MW_ENDPOINT, verbose=False, set_global_tracer_provider=False
-        )
+        providers = register(endpoint=MW_ENDPOINT, verbose=False, set_global_tracer_provider=False)
 
         processors = providers.tracer._active_span_processor._span_processors
         exporter = _get_exporter_from_processor(processors[0])
@@ -122,9 +118,7 @@ class TestRegister:
 
     @patch("middleware.llmobs.otel._auto_instrument_installed_openinference_libraries")
     def test_register_auto_instrument(self, mock_auto: Any) -> None:
-        providers = register(
-            auto_instrument=True, verbose=False, set_global_tracer_provider=False
-        )
+        providers = register(auto_instrument=True, verbose=False, set_global_tracer_provider=False)
         mock_auto.assert_called_once_with(providers.tracer)
 
     def test_register_reads_endpoint_from_env(self) -> None:
@@ -137,9 +131,7 @@ class TestRegister:
     def test_register_passes_through_kwargs(self) -> None:
         from opentelemetry.sdk.trace.sampling import ALWAYS_OFF
 
-        providers = register(
-            sampler=ALWAYS_OFF, verbose=False, set_global_tracer_provider=False
-        )
+        providers = register(sampler=ALWAYS_OFF, verbose=False, set_global_tracer_provider=False)
         assert providers.tracer.sampler == ALWAYS_OFF
 
     def test_register_global_flags_default_to_true(self) -> None:

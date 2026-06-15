@@ -14,8 +14,17 @@ from openinference.semconv.trace import (
 )
 from opentelemetry.sdk.resources import Resource
 
+from .decorators import (
+    annotate_rag,
+    embedding,
+    retriever,
+    task,
+)
 from .eval import (
     Assessment,
+    AsyncBaseEvaluator,
+    AsyncLLMClient,
+    AsyncLLMJudge,
     BaseEvaluator,
     BaseStructuredOutput,
     BooleanStructuredOutput,
@@ -29,6 +38,8 @@ from .eval import (
     ScoreStructuredOutput,
     ScoreValue,
     StructuredOutput,
+    aevaluate_and_submit,
+    async_evaluator,
     evaluate_and_submit,
     evaluator,
     export_current_span,
@@ -85,16 +96,25 @@ __all__ = [
     "OpenInferenceSpanKindValues",
     "OpenInferenceMimeTypeValues",
     "TraceConfig",
+    # Span decorators
+    "retriever",
+    "task",
+    "embedding",
+    "annotate_rag",
     # Evaluations
     "EvaluatorContext",
     "EvaluatorResult",
     "LLMClient",
+    "AsyncLLMClient",
     "MetricType",
     "Assessment",
     "ScoreValue",
     "evaluator",
+    "async_evaluator",
     "BaseEvaluator",
+    "AsyncBaseEvaluator",
     "LLMJudge",
+    "AsyncLLMJudge",
     "BaseStructuredOutput",
     "BooleanStructuredOutput",
     "ScoreStructuredOutput",
@@ -104,6 +124,7 @@ __all__ = [
     "submit_evaluation",
     "submit_evaluation_error",
     "evaluate_and_submit",
+    "aevaluate_and_submit",
     "flush_evaluations",
     "export_current_span",
     "EvalClient",
